@@ -1,21 +1,3 @@
-/*
- * This file is part of packetevents - https://github.com/retrooper/packetevents
- * Copyright (C) 2022 retrooper and contributors
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 package com.github.retrooper.packetevents.wrapper.play.server;
 
 import com.github.retrooper.packetevents.event.PacketSendEvent;
@@ -25,7 +7,6 @@ import com.github.retrooper.packetevents.protocol.attribute.Attributes;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.resources.ResourceLocation;
 import com.github.retrooper.packetevents.wrapper.PacketWrapper;
-import org.jetbrains.annotations.ApiStatus;
 
 import java.nio.charset.StandardCharsets;
 import java.util.AbstractMap.SimpleEntry;
@@ -38,7 +19,7 @@ import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-public class WrapperPlayServerUpdateAttributes extends PacketWrapper<WrapperPlayServerUpdateAttributes> {
+public class WrapperPlayServerUpdateAttributes extends PacketWrapper {
 
     private static final List<Map.Entry<String, Attribute>> PRE_1_16_ATTRIBUTES = Collections.unmodifiableList(Arrays.asList(
             new SimpleEntry<>("generic.maxHealth", Attributes.MAX_HEALTH),
@@ -83,62 +64,93 @@ public class WrapperPlayServerUpdateAttributes extends PacketWrapper<WrapperPlay
 
     @Override
     public void read() {
-        if (this.serverVersion.isOlderThanOrEquals(ServerVersion.V_1_7_10)) {
-            entityID = readInt();
-        } else {
-            entityID = readVarInt();
-        }
-
-        int propertyCount;
-        if (serverVersion.isNewerThanOrEquals(ServerVersion.V_1_17)) {
-            propertyCount = readVarInt();
-        } else {
-            propertyCount = readInt();
-        }
-        properties = new ArrayList<>(propertyCount);
-        for (int i = 0; i < propertyCount; i++) {
-            Attribute attribute;
-            if (this.serverVersion.isNewerThanOrEquals(ServerVersion.V_1_20_5)) {
-                attribute = this.readMappedEntity(Attributes::getById);
-            } else if (this.serverVersion.isNewerThanOrEquals(ServerVersion.V_1_16)) {
-                attribute = Attributes.getByName(this.readIdentifier().toString());
-            } else {
-                String attributeName = this.readString(64);
-                attribute = PRE_1_16_ATTRIBUTES_MAP.get(attributeName);
-                if (attribute == null) {
-                    attribute = Attributes.getByName(attributeName);
-                }
-                if (attribute == null) {
-                    throw new IllegalStateException("Can't find attribute for name " + attributeName
-                            + " (version: " + this.serverVersion.name() + ")");
-                }
-            }
-
-            double value = readDouble();
-            int modifiersLength;
+        try {
             if (this.serverVersion.isOlderThanOrEquals(ServerVersion.V_1_7_10)) {
-                modifiersLength = readShort();
+                if (!canReadBytes(4)) return;
+                entityID = readInt();
             } else {
-                modifiersLength = readVarInt();
+                if (!canReadBytes(1)) return;
+                entityID = readVarInt();
             }
-            List<PropertyModifier> modifiers = new ArrayList<>(modifiersLength);
-            for (int j = 0; j < modifiersLength; j++) {
-                ResourceLocation name;
-                UUID uuid;
-                if (this.serverVersion.isNewerThanOrEquals(ServerVersion.V_1_21)) {
-                    name = this.readIdentifier();
-                    uuid = PropertyModifier.generateSemiUniqueId(name);
+
+            int propertyCount;
+            if (serverVersion.isNewerThanOrEquals(ServerVersion.V_1_17)) {
+                if (!canReadBytes(1)) return;
+                propertyCount = readVarInt();
+            } else {
+                if (!canReadBytes(4)) return;
+                propertyCount = readInt();
+            }
+            properties = new ArrayList<>(propertyCount);
+
+            for (int i = 0; i < propertyCount; i++) {
+                Attribute attribute;
+
+                if (this.serverVersion.isNewerThanOrEquals(ServerVersion.V_1_20_5)) {
+                    attribute = this.readMappedEntity(Attributes::getById);
+                } else if (this.serverVersion.isNewerThanOrEquals(ServerVersion.V_1_16)) {
+                    if (!canReadIdentifier()) return;
+                    attribute = Attributes.getByName(this.readIdentifier().toString());
                 } else {
-                    uuid = this.readUUID();
-                    name = new ResourceLocation(uuid.toString());
+                    if (!canReadString(64)) return;
+                    String attributeName = this.readString(64);
+                    attribute = PRE_1_16_ATTRIBUTES_MAP.get(attributeName);
+                    if (attribute == null) {
+                        attribute = Attributes.getByName(attributeName);
+                    }
+                    if (attribute == null) {
+                        System.err.println("Can't find attribute for name " + attributeName
+                                + " (version: " + this.serverVersion.name() + ")");
+                        return;
+                    }
                 }
 
-                double amount = readDouble();
-                byte operationIndex = readByte();
-                PropertyModifier.Operation operation = PropertyModifier.Operation.VALUES[operationIndex];
-                modifiers.add(new PropertyModifier(name, uuid, amount, operation));
+                if (!canReadBytes(8)) return;
+                double value = readDouble();
+
+                int modifiersLength;
+                if (this.serverVersion.isOlderThanOrEquals(ServerVersion.V_1_7_10)) {
+                    if (!canReadBytes(2)) return;
+                    modifiersLength = readShort();
+                } else {
+                    if (!canReadBytes(1)) return;
+                    modifiersLength = readVarInt();
+                }
+
+                List<PropertyModifier> modifiers = new ArrayList<>(modifiersLength);
+                for (int j = 0; j < modifiersLength; j++) {
+                    ResourceLocation name;
+                    UUID uuid;
+
+                    if (this.serverVersion.isNewerThanOrEquals(ServerVersion.V_1_21)) {
+                        if (!canReadIdentifier()) return;
+                        name = this.readIdentifier();
+                        uuid = PropertyModifier.generateSemiUniqueId(name);
+                    } else {
+                        if (!canReadBytes(16)) return;
+                        uuid = this.readUUID();
+                        name = new ResourceLocation(uuid.toString());
+                    }
+
+                    if (!canReadBytes(8)) return;
+                    double amount = readDouble();
+
+                    if (!canReadBytes(1)) return;
+                    byte operationIndex = readByte();
+
+                    if (operationIndex >= PropertyModifier.Operation.VALUES.length || operationIndex < 0) {
+                        System.err.println("Operation index out of bounds: " + operationIndex);
+                        return;
+                    }
+
+                    PropertyModifier.Operation operation = PropertyModifier.Operation.VALUES[operationIndex];
+                    modifiers.add(new PropertyModifier(name, uuid, amount, operation));
+                }
+                this.properties.add(new Property(attribute, value, modifiers));
             }
-            this.properties.add(new Property(attribute, value, modifiers));
+        } catch (Exception e) {
+            System.err.println("Error reading WrapperPlayServerUpdateAttributes packet: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -161,7 +173,6 @@ public class WrapperPlayServerUpdateAttributes extends PacketWrapper<WrapperPlay
             } else if (this.serverVersion.isNewerThanOrEquals(ServerVersion.V_1_16)) {
                 this.writeIdentifier(property.getAttribute().getName(this.serverVersion.toClientVersion()));
             } else {
-                // just write the "modern" name if the legacy name can't be found
                 String str = PRE_1_16_ATTRIBUTES_RMAP.get(property.getAttribute());
                 this.writeString(str != null ? str : property.getAttribute().getName().toString());
             }
@@ -206,6 +217,24 @@ public class WrapperPlayServerUpdateAttributes extends PacketWrapper<WrapperPlay
         this.properties = properties;
     }
 
+    private boolean canReadBytes(int bytes) {
+        return readableBytes() >= bytes;
+    }
+
+    private boolean canReadString(int maxLength) {
+        if (!canReadBytes(1)) return false;
+        int length = peekStringLength();
+        return canReadBytes(length);
+    }
+
+    private boolean canReadIdentifier() {
+        return canReadBytes(3);
+    }
+
+    private int peekStringLength() {
+        return 64;
+    }
+
     public static class PropertyModifier {
         public enum Operation {
             ADDITION,
@@ -215,8 +244,8 @@ public class WrapperPlayServerUpdateAttributes extends PacketWrapper<WrapperPlay
             public static final Operation[] VALUES = values();
         }
 
-        private ResourceLocation name; // added in 1.21
-        private UUID uuid; // removed in 1.21
+        private ResourceLocation name;
+        private UUID uuid;
         private double amount;
         private Operation operation;
 
@@ -235,29 +264,24 @@ public class WrapperPlayServerUpdateAttributes extends PacketWrapper<WrapperPlay
             this.operation = operation;
         }
 
-        @ApiStatus.Internal
         public static UUID generateSemiUniqueId(ResourceLocation name) {
             String extendedName = "packetevents_" + name.toString();
             return UUID.nameUUIDFromBytes(extendedName.getBytes(StandardCharsets.UTF_8));
         }
 
-        // added in 1.21
         public ResourceLocation getName() {
             return this.name;
         }
 
-        // added in 1.21
         public void setName(ResourceLocation name) {
             this.name = name;
             this.uuid = generateSemiUniqueId(name);
         }
 
-        @ApiStatus.Obsolete // unused since 1.21
         public UUID getUUID() {
             return uuid;
         }
 
-        @ApiStatus.Obsolete // unused since 1.21
         public void setUUID(UUID uuid) {
             this.name = new ResourceLocation(uuid.toString());
             this.uuid = uuid;
@@ -367,12 +391,12 @@ public class WrapperPlayServerUpdateAttributes extends PacketWrapper<WrapperPlay
             return this.removeModifierIf(modifier -> modifierId.equals(modifier.getName()));
         }
 
-        @ApiStatus.Obsolete
+        @Deprecated
         public boolean removeModifier(UUID modifierId) {
             return this.removeModifierIf(modifier -> modifierId.equals(modifier.getUUID()));
         }
 
-        @ApiStatus.Obsolete
+        @Deprecated
         public boolean removeModifier(ResourceLocation modifierId, UUID modifierUId) {
             return this.removeModifierIf(modifier -> modifierUId.equals(modifier.getUUID())
                     || modifierId.equals(modifier.getName()));
